@@ -1,0 +1,21 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.env
+
+# Supabase and IDE files
+.vscode/
+.idea/
+.supabase/
+
+# Ignore generated media files for github
+*.pdf
+*.pptx
+*.png
+*.jpg
