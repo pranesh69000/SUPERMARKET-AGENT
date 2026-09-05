@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+import threading
 from flask import Flask, request
 from telegram import Update, Bot
 from agent import process_message
@@ -14,8 +15,18 @@ if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN missing in environment")
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# Common Telegram error - try again quickly on network blips
-from telegram.error import TimedOut
+# python-telegram-bot v21 `Bot` methods are async and backed by an internal
+# httpx AsyncClient bound to the event loop they first run on. Calling
+# asyncio.run() per request creates AND closes a fresh loop each time, so the
+# second request hits a closed loop ("Event loop is closed"). Instead, run one
+# persistent loop in a background thread and submit every coroutine to it.
+_loop = asyncio.new_event_loop()
+threading.Thread(target=_loop.run_forever, daemon=True).start()
+
+
+def run_async(coro):
+    """Run a coroutine on the persistent background loop and wait for its result."""
+    return asyncio.run_coroutine_threadsafe(coro, _loop).result()
 
 
 def send_file_if_present(chat_id, reply_text):
@@ -24,7 +35,7 @@ def send_file_if_present(chat_id, reply_text):
         match = re.search(r'([\w.-]+\.' + ext.lstrip('.') + r')', reply_text)
         if match and os.path.exists(match.group(1)):
             with open(match.group(1), 'rb') as f:
-                asyncio.run(bot.send_document(chat_id=chat_id, document=f))
+                run_async(bot.send_document(chat_id=chat_id, document=f))
 
 
 async def _process_update(update):
@@ -73,13 +84,13 @@ def webhook():
             update = Update.de_json(request.get_json(force=True), bot)
             if not update:
                 return 'OK'
-            asyncio.run(_process_update(update))
+            run_async(_process_update(update))
         except Exception as e:
             # Shield user from stack traces
             print(f"Webhook error: {type(e).__name__}: {e}")
             try:
                 if update and update.effective_chat:
-                    asyncio.run(bot.send_message(
+                    run_async(bot.send_message(
                         chat_id=update.effective_chat.id,
                         text="Sorry, I encountered an internal error. Please try again or clarify your request."
                     ))
@@ -112,7 +123,7 @@ async def _send_khata_reminders():
 def cron_reminders():
     """Triggered by a cron job (e.g. Render Cron) to send Khata payment reminders."""
     try:
-        return asyncio.run(_send_khata_reminders())
+        return run_async(_send_khata_reminders())
     except Exception as e:
         print(f"Cron error: {e}")
         return str(e), 500
@@ -143,7 +154,7 @@ async def _send_weekly_report():
 def cron_weekly_report():
     """Triggered by a cron job to send a weekly PPTX report."""
     try:
-        return asyncio.run(_send_weekly_report())
+        return run_async(_send_weekly_report())
     except Exception as e:
         print(f"Cron error: {e}")
         return str(e), 500
