@@ -4,17 +4,17 @@ from db import supabase
 from typing import Optional, List, Dict, Any
 
 @tool
-def receive_stock(item_name: str, quantity: float, cost_price: Optional[float] = None, mrp: Optional[float] = None) -> str:
+def receive_stock(sku: str, quantity: float, cost_price: Optional[float] = None, mrp: Optional[float] = None) -> str:
     """
     Receives stock for an existing product, updating its quantity.
+    You MUST provide the exact SKU (use resolve_product first if unsure).
     Optionally updates cost_price and mrp if provided.
-    Returns a success or error message.
     """
     try:
-        # Check if product exists (case-insensitive search)
-        res = supabase.table("products").select("*").ilike("name", f"%{item_name}%").execute()
+        # Check if product exists by exact SKU
+        res = supabase.table("products").select("*").eq("sku", sku).execute()
         if not res.data:
-            return f"Product matching '{item_name}' not found. Please add it as a new product first."
+            return f"Product with SKU '{sku}' not found. Please resolve the product first or add it as a new product."
         
         product = res.data[0]
         new_quantity = float(product['stock_quantity']) + float(quantity)
@@ -26,7 +26,7 @@ def receive_stock(item_name: str, quantity: float, cost_price: Optional[float] =
         if cost_price is not None: update_data["cost_price"] = float(cost_price)
         if mrp is not None: update_data["mrp"] = float(mrp)
             
-        supabase.table("products").update(update_data).eq("sku", product["sku"]).execute()
+        supabase.table("products").update(update_data).eq("sku", sku).execute()
         
         msg = f"Successfully received stock. {product['name']} now has {new_quantity} {product['unit']} in stock."
         if cost_price or mrp:

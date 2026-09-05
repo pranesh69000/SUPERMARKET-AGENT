@@ -5,13 +5,13 @@ from typing import Optional, List, Dict, Any
 import uuid
 
 @tool
-def manage_bill(action: str, current_bill_id: Optional[str] = None, item_name: Optional[str] = None, quantity: Optional[float] = None, payment_mode: Optional[str] = None) -> str:
+def manage_bill(action: str, current_bill_id: Optional[str] = None, sku: Optional[str] = None, quantity: Optional[float] = None, payment_mode: Optional[str] = None) -> str:
     """
     Handles multi-turn billing.
     Actions:
     - 'start': Starts a new draft bill. Returns the new bill_id. (Requires no other arguments).
-    - 'add_item': Adds an item to the draft bill. (Requires current_bill_id, item_name, quantity).
-    - 'remove_item': Removes an item from the draft bill. (Requires current_bill_id, item_name).
+    - 'add_item': Adds an item to the draft bill. (Requires current_bill_id, sku, quantity). You MUST use resolve_product first to find the exact sku!
+    - 'remove_item': Removes an item from the draft bill. (Requires current_bill_id, sku).
     - 'view': Views the current contents and total of the draft bill. (Requires current_bill_id).
     - 'finalize': Finalizes the bill, decrements stock atomically, and records payment mode. (Requires current_bill_id, payment_mode [Cash, UPI, Card]).
     """
@@ -26,11 +26,11 @@ def manage_bill(action: str, current_bill_id: Optional[str] = None, item_name: O
             return "Error: current_bill_id is required for this action."
             
         if action == 'add_item':
-            if not item_name or not quantity: return "Error: item_name and quantity required."
+            if not sku or not quantity: return "Error: sku and quantity required."
             
-            # Find product
-            prod_res = supabase.table("products").select("*").ilike("name", f"%{item_name}%").execute()
-            if not prod_res.data: return f"Product '{item_name}' not found."
+            # Find product by exact SKU
+            prod_res = supabase.table("products").select("*").eq("sku", sku).execute()
+            if not prod_res.data: return f"Product with SKU '{sku}' not found."
             product = prod_res.data[0]
             
             # Oversell Guard at draft level
@@ -40,8 +40,7 @@ def manage_bill(action: str, current_bill_id: Optional[str] = None, item_name: O
             mrp = float(product['mrp'])
             gst_rate = float(product['gst_rate'])
             
-            # Calculate taxes (assuming MRP is inclusive of GST for simplicity, or exclusive? Indian retail MRP is usually inclusive of taxes)
-            # Let's assume MRP is inclusive of taxes. Base price = MRP / (1 + GST%)
+            # Calculate taxes
             base_price = mrp / (1 + (gst_rate / 100))
             tax_amount = (mrp - base_price) * float(quantity)
             total_price = mrp * float(quantity)
@@ -58,15 +57,10 @@ def manage_bill(action: str, current_bill_id: Optional[str] = None, item_name: O
             return f"Added {quantity} x {product['name']} to bill. Item total: ₹{total_price:.2f}."
             
         elif action == 'remove_item':
-            if not item_name: return "Error: item_name required."
-            # First find product
-            prod_res = supabase.table("products").select("*").ilike("name", f"%{item_name}%").execute()
-            if not prod_res.data: return f"Product '{item_name}' not found."
-            sku = prod_res.data[0]['sku']
-            
+            if not sku: return "Error: sku required."
             # Delete from bill items
             supabase.table("bill_items").delete().eq("bill_id", current_bill_id).eq("product_sku", sku).execute()
-            return f"Removed {prod_res.data[0]['name']} from bill."
+            return f"Removed SKU {sku} from bill."
             
         elif action == 'view':
             res = supabase.table("bill_items").select("*, products(name)").eq("bill_id", current_bill_id).execute()
