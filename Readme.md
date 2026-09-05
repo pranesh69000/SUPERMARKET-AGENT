@@ -215,3 +215,39 @@ Ping us with questions — knowing what to ask is part of the signal.
 Good luck — we’re excited to see what you build.
 
 — Nebula KnowLab, Engineering
+
+---
+
+## Deployment
+
+This is a true chat-only agent. The chat is the product — no web app, no admin panel.
+
+### Live bot (always-on)
+
+Message the live bot directly on Telegram:
+
+**👉 `@<your_bot_handle>`**
+
+It is kept running on an always-on host while we review, so you can drive the scenarios yourself: receive stock → multi-item bill with an edit → oversell guard → khata cycle → PDF invoice → analysis deck → set a preference, start a `/new` chat, and confirm it is remembered.
+
+- Start a fresh conversation or use `/new` to clear chat history (store preferences are remembered).
+- Handles: stock-in, new products, billing (multi-turn with edits), stock/reorder queries, khata credit, daily close, GST-correct PDF invoices, PPTX analysis decks, and standing preferences.
+
+### How it’s hosted
+
+The bot runs as a Flask webhook (`app.py`) behind gunicorn on a free always-on host (Render). Telegram delivers updates to `POST /webhook`, the LangChain agent (`agent.py`) orchestrates the store tools, and everything persists in Supabase (stock, bills, khata, preferences, chat history).
+
+### Deploy it yourself
+
+1. Create a Web Service on Render from this repo (see `render.yaml`), runtime Python.
+2. `pip install -r requirements.txt`, start command: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120`.
+3. Set env vars: `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `NVIDIA_API_KEY`.
+4. Point Telegram at your public URL:
+   `python set_webhook.py` → paste `https://<your-app>.onrender.com/webhook`
+   (or: `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<URL>/webhook`)
+
+### Local dev
+
+- Polling: `python bot.py`
+- Webhook via ngrok: `python run_server.py` then `python set_webhook.py` with the ngrok URL.
+- Seed products: `python seed_db.py` (see `schema.sql` / `rpc_schema.sql` for tables + atomic stock RPC).

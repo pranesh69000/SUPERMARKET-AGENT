@@ -1,0 +1,22 @@
+# Render Blueprint - Supermarket Ops Agent
+# Deploy this web service, then set the Telegram webhook:
+#   https://api.telegram.org/bot<TOKEN>/setWebhook?url=<YOUR_RENDER_URL>/webhook
+# env vars below must be filled in the Render dashboard (Render Blueprints prompt you for them).
+
+services:
+  - type: web
+    name: supermarket-ops-agent
+    runtime: python
+    healthCheckPath: /
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    plan: free
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
