@@ -1,253 +1,48 @@
-Nebula KnowLab · Engineering
+# Supermarket Ops Agent — README
 
-Take-Home Assignment: Supermarket Ops Agent
+**Live bot:** [@NebuuuuuBot] (Telegram)
 
-1. The brief
+## 1. Harness: LangChain agent, and why
 
-Build a conversational agent that runs a small Indian supermarket / kirana store end-to-end. The owner operates the whole shop from Telegram, in plain language — receiving stock, cutting bills, checking what’s left, running customer credit, closing the day, and pulling invoices and analysis decks on demand.
+The agent is built on **LangChain** (Python) rather than Claude Agent SDK / deep agent / Vercel AI SDK.
 
-There is no web app, no admin panel, no forms. The chat is the product.
+- **Tool-calling model fits the task shape.** The brief explicitly forbids a regex/intent router; LangChain's tool-calling `AgentExecutor` puts the model in charge of picking and chaining tools each turn, with structured (Pydantic) tool schemas that reject malformed calls before they touch the store.
+- **Clean separation of prompt vs. business logic.** Tools are plain Python functions with their own validation, transactions, and error paths — the prompt only carries persona, store context, and standing preferences, never the rules themselves.
+- **Fits the deployment surface.** A Flask webhook is a natural front door for Telegram; LangChain's agent runs synchronously inside a request handler without needing a bespoke node-graph runtime, avoiding the LangGraph-style state machine the brief explicitly steers away from.
+- **Persistence-friendly.** Supabase (Postgres) sits behind the tools, so every tool call is a normal transactional DB operation — no framework-specific state to keep in sync with the database.
 
-This is the whole point. It is not a CRUD app with a chatbot in front of it. It’s an agent that reasons over messy human requests and keeps a store’s books consistent. We don’t hand you a tool list — you author the skills and tools that run the store and let the model orchestrate them. If you find yourself writing a large if/elif intent router full of regexes, you’ve taken the wrong turn.
+## 2. Control loop
 
-Build on any modern agent harness — your choice. Designing the skill and tool surface, and picking a harness you can justify, is the core of the exercise.
+```
+Telegram update → POST /webhook (Flask) → dedupe by update_id
+   → load owner + standing preferences from Supabase
+   → LangChain AgentExecutor: observe → reason → call tool(s) → observe result → continue
+     (multiple tool calls chained within one turn, e.g. lookup price → check stock → add to draft bill)
+   → final natural-language reply → sent back to Telegram
+```
+The loop is a straight ReAct-style cycle per incoming message; each tool call and its result is appended to the agent's scratchpad so it can chain lookups (price, stock, GST slab) before acting, and re-plan if a tool refuses.
 
-Harness options: Claude Agent SDK · deep agent · Vercel AI SDK (or equivalent).
+## 3. Skill / tool design
 
-2. The domain — Indian kirana / supermarket
+Tools are grouped by store function, each thin and single-purpose so the model composes them rather than any one tool encoding a workflow:
 
-Model a real Indian grocery store.
+- **Inventory** — `add_product`, `receive_stock`, `get_stock`, `low_stock_report`
+- **Billing** — `start_bill`, `add_line_item`, `remove_line_item`, `finalize_bill` (only this decrements stock)
+- **Khata** — `credit_add`, `credit_pay`, `credit_balance`
+- **Operations** — `daily_close`
+- **Documents** — `generate_invoice_pdf`, `generate_analysis_deck`
+- **Preferences** — `get_preference`, `set_preference`
 
-Currency: ₹ (INR).
+Every tool validates its own inputs against the DB (no hardcoded product/price data), and every write is a single Supabase RPC transaction so partial updates can't happen.
 
-Products: real SKUs — Aashirvaad Atta 5kg, Tata Salt 1kg, Amul Butter 100g, Fortune Sunflower Oil 1L, Maggi 70g, Parle-G, Surf Excel — plus loose items (sugar, rice, dal by the kg).
+## 4. How each hard part was solved
 
-Units: kg / g / litre / ml / packet / dozen / piece. Loose vs packaged.
-
-GST: compute it correctly. Many staples are 0% (loose atta/rice/fresh produce), packaged staples 5%, FMCG like chocolates/soaps 12–18%. Intra-state = CGST + SGST split; each item carries an HSN code and a tax slab. A bill must show the tax breakup and round correctly.
-
-Payments: Cash / UPI / Card — record the mode and a reference; no real gateway.
-
-Khata (credit ledger): customers buy on credit and settle later — a first-class kirana concept. “Put ₹500 on Ramesh’s credit”, “What’s Ramesh’s balance?”, “Ramesh paid ₹300”.
-
-Stock discipline: every SKU has cost price, MRP/sell price, quantity and a reorder level. Selling decrements stock atomically.
-
-The owner types in plain, terse English — real-shopkeeper phrasing.
-
-3. What the owner must be able to do
-
-These are capabilities, not fixed commands — the agent decides which tools to call.
-
-Intent
-
-Example message
-
-Receive stock
-
-50 packets of Maggi came in, cost ₹12, MRP ₹14
-
-Add a new product
-
-new item: Amul Butter 100g, GST 12%, MRP ₹62
-
-Cut a bill
-
-make a bill: 2kg sugar, 1 Aashirvaad atta 5kg, 4 Maggi, 1 Amul butter, UPI
-
-Edit a bill mid-build
-
-drop the butter, make it 6 Maggi
-
-Stock query
-
-how much sugar is left?
-
-Low-stock / reorder
-
-what's running out?
-
-Credit (khata)
-
-put ₹500 on Ramesh’s credit · Ramesh paid ₹300 · Ramesh’s balance?
-
-Daily close
-
-today's sales? / close the day → total, tax collected, cash vs UPI, top items
-
-Invoice as PDF
-
-send me that bill as a PDF → a clean, GST-correct invoice document
-
-Analysis deck
-
-make this week's sales analysis deck → a PPTX with charts & insights
-
-Set a preference
-
-always assume UPI unless I say cash · default atta = Aashirvaad 5kg → remembered across chats
-
-When a request is genuinely ambiguous (e.g. add atta → “Which one — Aashirvaad 5kg or loose?”), the agent should ask a clarifying question rather than guess. That clarification must come from the model, not a hardcoded branch.
-
-4. The hard parts — this is the actual test
-
-A working demo is easy. These are what separate a real agent from a toy. Handle them, and describe how in your README.
-
-1. Grounding
-
-Prices, GST slabs and stock come from the DB via tools. Never invent a product or a price.
-
-2. Oversell guard
-
-Stock can’t go negative. Billing 10 when 6 are in stock is refused at the tool layer, not the prompt.
-
-3. GST correctness
-
-Per-item slab, CGST/SGST split, rounding, and a legible tax breakup on the bill.
-
-4. Multi-turn bills
-
-A bill builds over several messages, supports edits, and only decrements stock on finalise.
-
-5. Idempotency
-
-Telegram redelivers updates. A retried “finalize” must not double-bill or double-decrement stock.
-
-6. Concurrency
-
-Two bills — or a sale plus a stock-in — in flight at once must not corrupt stock.
-
-7. Guardrails
-
-Don’t sell below cost, don’t delete stock, don’t settle a khata that doesn’t exist — confirm or refuse.
-
-8. Real artifacts
-
-A proper GST invoice (PDF) and a business-analysis deck (PPTX) with real charts — generated by the agent’s own tools, not screenshots or plain text.
-
-9. Memory across sessions
-
-Standing preferences (default payment, preferred brand, shop name/GSTIN on invoices) persist across chats — start a /new chat and they still apply. Memory lives outside the context window, not just in the conversation.
-
-5. Architecture requirements
-
-You design the skills and tools. We deliberately don’t give you a tool list. Deciding what the skills are (inventory, billing, credit, analytics, document generation…), how thin each tool should be, and how the agent composes them is the thing we’re evaluating. Author them the way your harness expects — skill files, tool schemas, subagents.
-
-Agent-first
-
-The model orchestrates. Natural language goes through the model + your tools. A regex/keyword router doing the real work is an automatic fail.
-
-Business rules live in the skills/tools, not the prompt
-
-Oversell guard, GST maths, idempotency and khata rules are enforced where the data changes — not hoped for in the system prompt.
-
-A real control loop
-
-Observe → reason → act (call tool) → feed result back → continue, chaining multiple tool calls within one turn as needed.
-
-6. Persistence & memory
-
-SQLite or Postgres.
-
-Survives a restart. Stock, khata, bills and owner preferences are durable — a /new chat clears the conversation but not what the store knows about how this owner works.
-
-On frameworks
-
-Use any modern agent harness — Claude Agent SDK, deep agent, Vercel AI SDK, or an equivalent. We are explicitly not asking for a LangGraph-style, node-per-command state machine — that misreads the task.
-
-7. Deliverables
-
-A live bot we can message
-
-Deploy it and put the Telegram bot handle (@username) in your README, kept running while we review, so we can drive it through the scenarios in §3 ourselves.
-
-Built on a modern agent harness
-
-Claude Agent SDK, deep agent, Vercel AI SDK, or equivalent.
-
-Your skills & tools
-
-The capability surface you designed to run the store. This is the heart of what we grade.
-
-PDF invoices
-
-Any bill can be produced as a clean, GST-correct PDF invoice, generated by the agent.
-
-PPTX analysis deck
-
-On request, the agent generates a PowerPoint analysing the store (sales, top items, stock health, GST collected) with real charts.
-
-README (~1 page)
-
-The harness you picked and why; how your control loop works; your skill/tool design; and how you solved each hard part.
-
-A 4–5 min recording
-
-Receive stock → multi-item bill with an edit → oversell guard → khata cycle → generate a PDF invoice → generate the analysis deck → set a preference, start a /new chat, show it’s remembered.
-
-A private GitHub repository
-
-Invite the following collaborators: Aswath363, akshaiP, ashwanthnebula, with a clean commit history showing progression.
-
-8. Stretch — optional, to stand out
-
-Branded / templated invoice PDFs
-
-Scheduled weekly analysis deck, auto-sent
-
-Reorder suggestions from sales velocity
-
-Expiry / batch tracking with FEFO
-
-Voice-note orders (transcribe → bill)
-
-Multi-language (Hindi / Tamil)
-
-Barcode / product photo → identify item
-
-Khata payment reminders
-
-Submission
-
-Submit within 5 calendar days of receiving this task.
-
-Ping us with questions — knowing what to ask is part of the signal.
-
-Good luck — we’re excited to see what you build.
-
-— Nebula KnowLab, Engineering
-
----
-
-## Deployment
-
-This is a true chat-only agent. The chat is the product — no web app, no admin panel.
-
-### Live bot (always-on)
-
-Message the live bot directly on Telegram:
-
-**👉 `@<your_bot_handle>`**
-
-It is kept running on an always-on host while we review, so you can drive the scenarios yourself: receive stock → multi-item bill with an edit → oversell guard → khata cycle → PDF invoice → analysis deck → set a preference, start a `/new` chat, and confirm it is remembered.
-
-- Start a fresh conversation or use `/new` to clear chat history (store preferences are remembered).
-- Handles: stock-in, new products, billing (multi-turn with edits), stock/reorder queries, khata credit, daily close, GST-correct PDF invoices, PPTX analysis decks, and standing preferences.
-
-### How it’s hosted
-
-The bot runs as a Flask webhook (`app.py`) behind gunicorn on a free always-on host (Render). Telegram delivers updates to `POST /webhook`, the LangChain agent (`agent.py`) orchestrates the store tools, and everything persists in Supabase (stock, bills, khata, preferences, chat history).
-
-### Deploy it yourself
-
-1. Create a Web Service on Render from this repo (see `render.yaml`), runtime Python.
-2. `pip install -r requirements.txt`, start command: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120`.
-3. Set env vars: `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `NVIDIA_API_KEY`.
-4. Point Telegram at your public URL:
-   `python set_webhook.py` → paste `https://<your-app>.onrender.com/webhook`
-   (or: `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<URL>/webhook`)
-
-### Local dev
-
-- Polling: `python bot.py`
-- Webhook via ngrok: `python run_server.py` then `python set_webhook.py` with the ngrok URL.
-- Seed products: `python seed_db.py` (see `schema.sql` / `rpc_schema.sql` for tables + atomic stock RPC).
+1. **Grounding** — all product, price, GST slab, and stock lookups are tool calls against Supabase; the agent has no product knowledge of its own.
+2. **Oversell guard** — `finalize_bill` calls a Postgres RPC that checks-and-decrements stock inside one transaction; insufficient stock raises an error the tool surfaces back to the model, which reports the refusal instead of billing.
+3. **GST correctness** — each SKU carries HSN code and slab in the DB; billing computes CGST/SGST split per line item and rounds at the invoice level, not per line, to avoid drift.
+4. **Multi-turn bills** — a draft bill row (keyed by chat ID) holds line items across messages; `add_line_item`/`remove_line_item` mutate the draft, and stock is only touched on `finalize_bill`.
+5. **Idempotency** — Telegram's `update_id` is recorded and deduped at the webhook layer; `finalize_bill` also takes an idempotency key so a retried finalize returns the existing bill instead of billing twice.
+6. **Concurrency** — stock mutations go through a Supabase RPC using row-level locking (`SELECT ... FOR UPDATE`), so a bill finalize and a stock-in racing each other serialize instead of corrupting quantity.
+7. **Guardrails** — `finalize_bill` refuses lines priced below cost, there is no delete-stock tool at all (only stock-in/stock-out with audit trail), and `credit_pay`/`credit_balance` check the customer exists before acting — refusals are returned as tool errors, not swallowed.
+8. **Real artifacts** — `generate_invoice_pdf` renders a proper GST invoice (tax breakup, HSN, CGST/SGST) from the finalized bill row; `generate_analysis_deck` builds a PPTX with real charts (sales trend, top items, stock health, GST collected) from Supabase aggregates.
+9. **Memory across sessions** — standing preferences (default payment mode, preferred brand, shop name/GSTIN) live in a Supabase `preferences` table keyed by owner, loaded at the start of every turn regardless of `/new` — memory lives outside the LangChain conversation buffer entirely.
